@@ -63,6 +63,16 @@ There are a handful of packages that need to be installed to the microcontroller
 | ssd1306 | Wrapper for the SSD1306 OLED dispaly module. |
 
 
+### SD Card Structure
+
+The SD card should have the following structure:
+/
+|--- /tank_data
+    |
+    |--- /measurements
+
+Where */* is the root directory, */tank_data* is the project directory, and */tank_data/measurements* is where the measurement data files will be located. The project is setup like this so that other directories or files can be put into the file system (e.g., HTML files if a server displaying tank data) while keeping the system compartamentalized.
+
 <!-- USAGE EXAMPLE -->
 ## Usage Example
 

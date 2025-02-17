@@ -29,11 +29,14 @@ Changelog
     - Removes unnecessary imports.
     - Refines comments.
     - Fixes issue where f2c function was producing incorrect values.
+    - Adds ability to connect to WiFi with SSID/Password.
+    - Adds function that sets system time using NTP.
+    - Adds timestamps to measurement data containers.
 """
 
 
 # -------------------------------------------------------------------------------------------------
-# Required imports --------------------------------------------------------------------------------
+# Required Imports --------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
 
 from micropython import (
@@ -41,6 +44,8 @@ from micropython import (
     alloc_emergency_exception_buf   # Helpful when debugging. See MicroPython docs for more info
 )
 from machine import (
+    soft_reset,                     # Soft resetting the device
+    RTC,                            # Real time clock
     freq,                           # Setting the CPU clock frequency
     Pin,						    # GPIO access
     SoftI2C,					    # Communicating with I2C devices
@@ -103,7 +108,7 @@ _DATA_FILE_NAME_PREFIX: str = const("tank_measurements_")
 _DATA_FILE_EXTENSION: str = const(".csv")
 
 # Column headers for the data file
-_DATA_FILE_HEADER: str = const("air_temp_1,water_temp_1,water_temp_2\n")
+_DATA_FILE_HEADER: str = const("timestamp,air_temp_1,water_temp_1,water_temp_2\n")
 
 # Path to the current data file
 current_data_file_path: str = None
@@ -121,6 +126,22 @@ _HALF_CPU_FREQ_HZ: int = const(_BASE_CPU_FREQ_HZ // 2)
 # freq(_BASE_CPU_FREQ_HZ)
 freq(_HALF_CPU_FREQ_HZ)
 # freq(_ONE_AND_HALF_CPU_FREQ_HZ)
+
+# Change the following line to False if you don't want to enable wireless features.
+_ENABLE_WIFI: bool = const(True)
+
+# Credentials used to connect to lthe users network. A wireless connection is recommended as it is
+#   required for setting the system time at startup. Correct system time is required as it is the
+#   driver behind the timestamps taken at the point of each measurement.
+_WIFI_SSID: str = const("[INSERT SSID HERE]")
+_WIFI_PASS: str = const("[INSERT PASSWORD HERE]")
+
+# Real time clock used for timestamps
+rtc: RTC = RTC()
+
+# Offsets used to adjust for time zones
+_TIMEZONE_OFFSET_HOUR: float = const(-5.0)
+_TIMEZONE_OFFSET_SEC: int = const(int(_TIMEZONE_OFFSET_HOUR * 3600))
 
 
 # -------------------------------------------------------------------------------------------------
@@ -179,10 +200,12 @@ _INVALID_READING_VALUE: float = -999_999.0
 
 # Container used to store individual measurement data for both air and water values
 class MeasurementData:
-    def __init__(self, 
+    def __init__(self,
+                 _timestamp: str,
                  _air_temp_1: float = None, 
                  _water_temp_1: float = None, _water_temp_2: float = None):
         # Assign class fields by checking if the arguments are None
+        self.timestamp: str = _timestamp
         self.air_temp_1: float = _air_temp_1 \
             if _air_temp_1 is not None else _INVALID_READING_VALUE
         self.water_temp_1: float = _water_temp_1 \
@@ -194,7 +217,7 @@ class MeasurementData:
         """ This function overrides the base string function and outputs class data as a tuple of
         values. """
         
-        return self.air_temp_1, self.water_temp_1, self.water_temp_2
+        return self.timestamp, self.air_temp_1, self.water_temp_1, self.water_temp_2
     
     def is_valid(self) -> bool:
         """ Checks if the current fields are valid by comparing them to the invalid value.
@@ -263,8 +286,11 @@ def take_measurement(increment_counter: bool = True) -> MeasurementData:
     dht_sensor.measure()
     ds_sensors.convert_temp()
     
+    # Get the timestamp
+    _timestamp: str = format_system_time(rtc.datetime())
+    
     # Create a new data container
-    _data_container: MeasurementData = MeasurementData()
+    _data_container: MeasurementData = MeasurementData(_timestamp)
     
     try:
         # Read the sensor values into local variables
@@ -278,7 +304,9 @@ def take_measurement(increment_counter: bool = True) -> MeasurementData:
         _water_temp_2 = c2f(_water_temp_2)
     
         # Fill in the data container with the values
-        _data_container: MeasurementData = MeasurementData(_air_temp_1, _water_temp_1, _water_temp_2)
+        _data_container.air_temp_1 = _air_temp_1
+        _data_container.water_temp_1 = _water_temp_1
+        _data_container.water_temp_2 = _water_temp_2
     except onewire.OneWireError:
         # Sensors could not be detected, possibly due to a faulty connection
         print("OneWireError occurred, could not read values into the data container.")
@@ -372,8 +400,8 @@ def dump_to_storage(_data: list[MeasurementData]) -> None:
     # Convert the data to a list of strings
     _lines: list[str] = []
     for _d in _data:
-        # Format the line as air temp 1, water temp 1, water temp 2, newline character
-        _line: str = f"{_d.air_temp_1},{_d.water_temp_1},{_d.water_temp_2}\n"
+        # Format the line as timestamp, air temp 1, water temp 1, water temp 2, newline character
+        _line: str = f"{_d.timestamp},{_d.air_temp_1},{_d.water_temp_1},{_d.water_temp_2}\n"
         
         # Insert the line into the list
         _lines.append(_line)
@@ -384,7 +412,7 @@ def dump_to_storage(_data: list[MeasurementData]) -> None:
     # Convert the size in bytes to megabytes
     _current_data_file_size_mb: float = _current_data_file_size_b / (1_024 * 1_024)
     
-    # Verify that the size of the current data file doesn't exceed the maximum allowed size in MB.
+    # Verify that the size of the current data file doesn't exceed the maximum allowed size in MB
     if _current_data_file_size_mb >= _DATA_FILE_MAX_SIZE_MB:
         # Reset the data file write count
         data_file_write_count = 0
@@ -477,6 +505,74 @@ def error_loop(blink_count: int) -> None:
         sleep_ms(5_000)
 
 
+def set_system_time() -> None:
+    """ Set the system time using the NTP protocol. """
+    
+    # Check if WiFi is enabled
+    if not _ENABLE_WIFI:
+        return
+    
+    # Get the required global variable
+    global rtc
+    
+    # Import the network and ntp libraries
+    import network
+    import ntptime
+    
+    # Enable the station
+    sta_if = network.WLAN(network.STA_IF)
+    sta_if.active(False)
+
+    try:
+        # Check if the station is already connected
+        if not sta_if.isconnected():
+            print(f"Attempting to connect to {_WIFI_SSID}")
+            
+            # Enable the station
+            sta_if.active(True)
+            
+            # Attempt to connect using the SSID and password
+            sta_if.connect(_WIFI_SSID, _WIFI_PASS)
+            while not sta_if.isconnected():
+                print('.', end='')
+                sleep_ms(500)
+        
+        # Output network configuration information
+        print(f"\nNetwork Configuration: {sta_if.ifconfig()}")
+        
+        # Set the system time using ntp
+        sec = ntptime.time() + _TIMEZONE_OFFSET_SEC
+        (year, month, day, hours, minutes, seconds, weekday, yearday) = localtime(sec)
+        rtc.datetime((year, month, day, 0, hours, minutes, seconds, 0))
+    except OSError:
+        print("Unable to set system time using WiFi. System resetting.")
+        soft_reset()
+    
+    # De-activate the station as it is no longer needed
+    sta_if.active(False)
+
+
+def format_system_time(_system_time: tuple) -> str:
+    """ Format a given system time tuple into a string timestamp. 
+    
+    params
+    -----
+    _system_time [tuple, required] A tuple of the following format:
+        (year, month, mday, hour, minute, second, weekday, yearday)
+    
+    returns
+    -----
+    Timestamp formatted as a string.
+    """
+    
+    year: int = _system_time[0]
+    month: int = _system_time[1]
+    day: int = _system_time[2]
+    time: str = f"{_system_time[4]}:{_system_time[5]}:{_system_time[6]}"
+    
+    return f"{month}/{day}/{year} {time}"
+
+
 # -------------------------------------------------------------------------------------------------
 # Interrupt Handlers ------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
@@ -512,6 +608,10 @@ wake_on_ext0(pin=write_button, level=WAKEUP_ANY_HIGH)
 # -------------------------------------------------------------------------------------------------
 # Main --------------------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
+
+# Set the system time using NTP
+set_system_time()
+print(f"System time set to: {rtc.datetime()}")
 
 # 5 second delay before main loop begins. This could be removed if not desired
 sleep_ms(5_000)
