@@ -1,5 +1,5 @@
 <!-- HEADER -->
-# Fish Tank Monitor
+# Tank Tailor
 
 A system that periodically measures environment variables in and surrounding my fish tank.
 

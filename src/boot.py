@@ -32,6 +32,26 @@ Changelog
     - Adds ability to connect to WiFi with SSID/Password.
     - Adds function that sets system time using NTP.
     - Adds timestamps to measurement data containers.
+
+18-FEB-2025:
+    - Renames file from "main.py" to "boot.py".
+    - Separates user settings (those that users may want to edit) from general settings (those
+        that in general, should be left alone).
+    - Removes unnecessary interrupt service routine tied to manual data dump button as it is not
+        needed when the device is set to wake on EXT0.
+    - Adds check for wake reason when manual data dump button is pressed.
+    - SPI bus used by the SD card module now uses the VSPI interface as HSPI_MISO (GPIO pin 12)
+        was causing issues on boot.
+    - SPI bus used by the SD card module now uses hardware SPI instead of software SPI.
+    - Adds a call for garbage collection when...:
+        - Program starts
+        - Data is dumped to persistent storage
+    - Removes count_data_files function and moved the single instruction directly into the 
+        create_data_file function.
+    - Adds more comprehensive and easier to read print statements.
+    - The lightsleep function call in the main loop now accounts for the duration of time the
+        onboard LED is on.
+    - Adds connection timeout for when device is attempting to connect to WiFi.
 """
 
 
@@ -39,21 +59,21 @@ Changelog
 # Required Imports --------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
 
-from micropython import (
-    const,                          # Defining constants
-    alloc_emergency_exception_buf   # Helpful when debugging. See MicroPython docs for more info
-)
+from micropython import const       # Defining constants
 from machine import (
+    wake_reason,                    # Getting device wakeup reason
+    PIN_WAKE,                       # Wake reason used for pin wake up
     soft_reset,                     # Soft resetting the device
     RTC,                            # Real time clock
     freq,                           # Setting the CPU clock frequency
     Pin,						    # GPIO access
     SoftI2C,					    # Communicating with I2C devices
     lightsleep,					    # Putting device to sleep
-    SPI,                            # Required to use SoftSPI 
-    SoftSPI                         # Communicating with devices using SoftSPI
+    SPI                             # Required to use SoftSPI 
 )
 from utime import (
+    ticks_ms,                       # Tick counter
+    ticks_add,                      # Calculating tick counts
     sleep_ms,                       # Short duration delays
     localtime                       # Timestamps
 )
@@ -74,10 +94,14 @@ from esp32 import (
 )
 
 import onewire                      # Onewire interface
+import gc                           # Garbage collection
 
+
+# Run the garbage collector to clear unused memory
+gc.collect()
 
 # -------------------------------------------------------------------------------------------------
-# General Settings --------------------------------------------------------------------------------
+# User Settings -----------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
 
 # Time in seconds between measurements. This value MUST NOT go below two (2) seconds, as the DHT11 
@@ -85,47 +109,14 @@ import onewire                      # Onewire interface
 #   update. These delays are accounted for in the code body. This value is meant to be modified.
 _MEASURE_DELAY_SEC: int = const(60)
 
-# Time in milliseconds between measurements. This value is NOT TO BE MODIFIED
-_MEASURE_DELAY_MS: int = const(_MEASURE_DELAY_SEC * 1_000)
+# Number of data containers to hold in the data queue
+_DATA_QUEUE_MAX_LEN: int = const(30)
 
 # Should the system display measurements in Fahrenheit (True) or Celsius (False)?
 _USE_FAHRENHEIT_UNITS: bool = True
 
-# Number of data containers to hold in the data queue
-_DATA_QUEUE_MAX_LEN: int = const(30)
-
 # Maximum size a data file size in MB
 _DATA_FILE_MAX_SIZE_MB: float = const(2.0)
-
-# Path to root tank data dir
-_ROOT_DIR_PATH: str = const("/tank_data")
-
-# Path to measurements directory where data files are stored
-_MEASUREMENTS_DIR_PATH: str = const(f"{_ROOT_DIR_PATH}/measurements")
-
-# Data file name prefix
-_DATA_FILE_NAME_PREFIX: str = const("tank_measurements_")
-_DATA_FILE_EXTENSION: str = const(".csv")
-
-# Column headers for the data file
-_DATA_FILE_HEADER: str = const("timestamp,air_temp_1,water_temp_1,water_temp_2\n")
-
-# Path to the current data file
-current_data_file_path: str = None
-
-# Frequency at which the CPU will run. On the ESP32 used for testing, the base frequency is
-#   160_000_000 Hz, or 160 MHz. If changing the frequency isn't necessary, this whole section may
-#   be commented out to prevent useless variables being created in memory.
-#
-#   THIS VALUE MUST BE AN INT. Calling freq() with anything else will thrown an exception.
-_BASE_CPU_FREQ_HZ: int = const(160_000_000)
-_HALF_CPU_FREQ_HZ: int = const(_BASE_CPU_FREQ_HZ // 2)
-# _ONE_AND_HALF_CPU_FREQ_HZ: int = const(int(_BASE_CPU_FREQ_HZ * 1.5))
-
-# Call the freq() function using the desired frequency as an input.
-# freq(_BASE_CPU_FREQ_HZ)
-freq(_HALF_CPU_FREQ_HZ)
-# freq(_ONE_AND_HALF_CPU_FREQ_HZ)
 
 # Change the following line to False if you don't want to enable wireless features.
 _ENABLE_WIFI: bool = const(True)
@@ -135,6 +126,48 @@ _ENABLE_WIFI: bool = const(True)
 #   driver behind the timestamps taken at the point of each measurement.
 _WIFI_SSID: str = const("[INSERT SSID HERE]")
 _WIFI_PASS: str = const("[INSERT PASSWORD HERE]")
+
+# Duration of time in seconds WiFi will attempt to connect before timing out.
+_WIFI_TIMEOUT_THRESHOLD_SEC: int = const(30)
+
+# Number of attempts device will attempt to connect to WiFi before erroring out.
+_WIFI_CONNECT_ATTEMPTS: int = const(3)
+
+# Frequency at which the CPU will run. On the ESP32 used for testing, the base frequency is
+#   160_000_000 Hz, or 160 MHz. If changing the frequency isn't necessary, this whole section may
+#   be commented out to prevent useless variables being created in memory. In general, lower
+#   frequency values will use less power, and higher values more power.
+#
+#   THIS VALUE MUST BE AN INT. Calling freq() with anything else will thrown an exception.
+_CPU_FREQ_HZ: int = const(160_000_000 // 2)
+freq(_CPU_FREQ_HZ)
+
+
+# -------------------------------------------------------------------------------------------------
+# General Settings --------------------------------------------------------------------------------
+# -------------------------------------------------------------------------------------------------
+
+# Time in milliseconds between measurements. This value is NOT TO BE MODIFIED.
+_MEASURE_DELAY_MS: int = const(_MEASURE_DELAY_SEC * 1_000)
+
+# Path to root tank data dir. This value is NOT TO BE MODIFIED.
+_ROOT_DIR_PATH: str = const("/tank_data")
+
+# Path to measurements directory where data files are stored. This value is NOT TO BE MODIFIED.
+_MEASUREMENTS_DIR_PATH: str = const(f"{_ROOT_DIR_PATH}/measurements")
+
+# Data file name prefix. This may be modified, up to the user.
+_DATA_FILE_NAME_PREFIX: str = const("tank_measurements_")
+_DATA_FILE_EXTENSION: str = const(".csv")
+
+# Column headers for the data file. This may be modified to accomodate data being collected.
+_DATA_FILE_HEADER: str = const("timestamp,air_temp_1,water_temp_1,water_temp_2\n")
+
+# Path to the current data file.
+current_data_file_path: str = None
+
+# Time in milliseconds WiFi will attempt to connect before timing out.
+_WIFI_TIMEOUT_THRESHOLD_MS: int = const(_WIFI_TIMEOUT_THRESHOLD_SEC * 1_000)
 
 # Real time clock used for timestamps
 rtc: RTC = RTC()
@@ -156,14 +189,16 @@ onboard_led: Pin = Pin(2, Pin.OUT, value=0)
 #   prevent multiple presses being registered in the case of button contact bouncing.
 write_button: Pin = Pin(35, Pin.IN, Pin.PULL_DOWN)
 
-# Flag used to tell the system when to dump the data should the dump button be pressed
-manual_data_dump_triggered: bool = False
+# Tell the device to wake up when interrupted by the data dump button
+wake_on_ext0(pin=write_button, level=WAKEUP_ANY_HIGH)
 
 # I2C instance for devices communicating using I2C
 i2c: SoftI2C = SoftI2C(sda=Pin(21), scl=Pin(22))
 
 # SPI instance for devices communicating using SPI
-spi: SoftSPI = SoftSPI(1, sck=Pin(18), mosi=Pin(23), miso=Pin(19))
+spi: SPI = SPI(2, 
+               baudrate=500_000, polarity=0, phase=0, bits=8, firstbit=0, 
+               sck=Pin(18), mosi=Pin(23), miso=Pin(19))
 
 # OLED Display - Used to display system information
 _OLED_WIDTH: int = const(128)
@@ -179,7 +214,7 @@ dht_sensor = DHT11(Pin(32))
 
 # SD Card Module - Used to act as persistent storage so that data may be read on another device
 sd_controller: SDCard = SDCard(spi, Pin(5))
-vfs: VfsFat = None
+vfs: VfsFat = VfsFat(sd_controller)
 
 
 # -------------------------------------------------------------------------------------------------
@@ -238,6 +273,27 @@ data_queue: list[MeasurementData] = []
 # -------------------------------------------------------------------------------------------------
 # Static Methods ----------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
+
+def print_memory_usage() -> float:
+    """ Output the usage of microcontroller RAM. """
+    
+    # Get the current memory free and allocated
+    _mem_free: int = gc.mem_free()
+    _mem_alloc: int = gc.mem_alloc()
+    
+    # Add memory free plus the memory allocated to get total memory
+    _mem_total: int = _mem_free + _mem_alloc
+    
+    # Calculate what percentage of memory is free
+    _mem_free: float = _mem_free / _mem_total * 100.0
+    _mem_used: float = _mem_alloc / _mem_total * 100.0
+    
+    # Output results
+    print(f"[i] RAM usage stats:\
+        \n\tTotal: {_mem_total}\
+        \n\tFree: {_mem_free} ({round(_mem_free, 2)}%)\
+        \n\tAllocated: {_mem_alloc} ({round(_mem_used, 2)}%)")
+    
 
 def c2f(_temp_c: float) -> float:
     """ Convert a temperature in degrees Celsius to degrees Fahrenheit.
@@ -309,12 +365,12 @@ def take_measurement(increment_counter: bool = True) -> MeasurementData:
         _data_container.water_temp_2 = _water_temp_2
     except onewire.OneWireError:
         # Sensors could not be detected, possibly due to a faulty connection
-        print("OneWireError occurred, could not read values into the data container.")
+        print("[x] OneWireError occurred, could not read values into the data container.")
     except Exception as err:
         # Some other exception occurred.
-        print("Other exception occurred:\n\n" /
+        print("[x] Other exception occurred:\n\n\t" /
             "-" * 25 /
-            f"{err}" /
+            f"\n\t{err}\n\t" /
             "-" * 25 /
             "\n\n"
         )
@@ -328,18 +384,6 @@ def take_measurement(increment_counter: bool = True) -> MeasurementData:
     
     # Return the data container
     return _data_container
-
-
-def count_data_files() -> int:
-    """ Counts the number of data files within the data directory. 
-    
-    returns
-    -----
-    The number of data files located within the data directory.
-    """
-    
-    # Return the number of items within the measurements directory
-    return len(listdir(_MEASUREMENTS_DIR_PATH))
 
 
 def create_data_file(check_last_file: bool = False) -> str:
@@ -357,7 +401,7 @@ def create_data_file(check_last_file: bool = False) -> str:
     """
     
     # Count the number of data files currently in the data directory
-    _data_file_count: int = count_data_files()
+    _data_file_count: int = len(listdir(_MEASUREMENTS_DIR_PATH))
     
     # Manage the check_last_file parameter, only if there are data files present.
     if _data_file_count > 0 and check_last_file:
@@ -438,6 +482,9 @@ def dump_to_storage(_data: list[MeasurementData]) -> None:
         sleep_ms(250)
         onboard_led.off()
         sleep_ms(500)
+    
+    # Run the garbage collector
+    gc.collect()
 
 
 def update_display(_data_container: MeasurementData) -> None:
@@ -526,26 +573,41 @@ def set_system_time() -> None:
     try:
         # Check if the station is already connected
         if not sta_if.isconnected():
-            print(f"Attempting to connect to {_WIFI_SSID}")
+            print(f"[i] Attempting to connect to {_WIFI_SSID}")
             
             # Enable the station
             sta_if.active(True)
             
+            # Mark the time a connection attempt should time out
+            stop: int = ticks_add(ticks_ms(), _WIFI_TIMEOUT_THRESHOLD_MS)
+            connect_attempts: int = 0
+            
             # Attempt to connect using the SSID and password
             sta_if.connect(_WIFI_SSID, _WIFI_PASS)
             while not sta_if.isconnected():
+                # Check if elapsed time has exceeded timeout threshold
+                if ticks_ms() > stop:
+                    # Connection attempt has timed out
+                    connect_attempts += 1
+                    stop = ticks_add(ticks_ms(), _WIFI_TIMEOUT_THRESHOLD_MS)
+                
+                # Check if the number of connection attempts has been reached.
+                if connect_attempts == _WIFI_CONNECT_ATTEMPTS:
+                    print("\n[x] Reached WiFi max connect attempts.")
+                    error_loop(4)
+                
                 print('.', end='')
                 sleep_ms(500)
         
         # Output network configuration information
-        print(f"\nNetwork Configuration: {sta_if.ifconfig()}")
+        print(f"\n[i] Network Configuration: {sta_if.ifconfig()}")
         
         # Set the system time using ntp
         sec = ntptime.time() + _TIMEZONE_OFFSET_SEC
         (year, month, day, hours, minutes, seconds, weekday, yearday) = localtime(sec)
         rtc.datetime((year, month, day, 0, hours, minutes, seconds, 0))
     except OSError:
-        print("Unable to set system time using WiFi. System resetting.")
+        print("[x] Unable to set system time using WiFi. System resetting.")
         soft_reset()
     
     # De-activate the station as it is no longer needed
@@ -574,44 +636,12 @@ def format_system_time(_system_time: tuple) -> str:
 
 
 # -------------------------------------------------------------------------------------------------
-# Interrupt Handlers ------------------------------------------------------------------------------
-# -------------------------------------------------------------------------------------------------
-
-# The following verbiage comes from the MicroPython docs on ISRs and their rules:
-#
-#       If an error occurs in and ISR, MicroPython is unable to produce an error report unless a 
-#       special buffer is created for the purpose. Debugging is simplified if the following code is
-#       included in any program using interrupts.
-#
-#   Here is where we allocate that buffer.
-alloc_emergency_exception_buf(100)
-
-
-def dump_to_storage_isr(_pin: Pin) -> None:
-    """ ISR to handle manual data dumping. """
-    
-    # Get the required global variable
-    global manual_data_dump_triggered
-    
-    # Set the manual data dump flag HIGH
-    manual_data_dump_triggered = True
-
-
-# Attach the interrupt handler to the data write button
-write_button.irq(trigger=Pin.IRQ_RISING, handler=dump_to_storage_isr)
-
-
-# Tell the device to wake up when interrupted by the data dump button
-wake_on_ext0(pin=write_button, level=WAKEUP_ANY_HIGH)
-
-
-# -------------------------------------------------------------------------------------------------
 # Main --------------------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
 
 # Set the system time using NTP
 set_system_time()
-print(f"System time set to: {rtc.datetime()}")
+print(f"[i] System time set to: {rtc.datetime()}")
 
 # 5 second delay before main loop begins. This could be removed if not desired
 sleep_ms(5_000)
@@ -632,9 +662,6 @@ if not _data_container.is_valid():
     # Data are invalid. Enter the error loop, blinking twice / cycle
     error_loop(2)
 
-# Create an instance of MicroPython Unix-like Virtual File System (vfs)
-vfs = VfsFat(sd_controller)
-
 # Mount the SD card to the project root folder
 mount(sd_controller, f"{_ROOT_DIR_PATH}")
 
@@ -643,7 +670,7 @@ try:
     chdir(_MEASUREMENTS_DIR_PATH)
 except OSError as err:
     # Couldn't change to the directory requested. Output message to console and enter error loop.
-    print(f"Could not navigate into directory: {_MEASUREMENTS_DIR_PATH}\n\n{err}")
+    print(f"[x] Could not navigate into directory: {_MEASUREMENTS_DIR_PATH}\n\n{err}")
     error_loop(3)
 
 # Create a new data file, if one doesn't exist already.
@@ -651,6 +678,9 @@ current_data_file_path = create_data_file(check_last_file=True)
 
 # Loop forever, or until the device is no longer powered.
 while True:
+    # Output the memory usage statistics
+    print_memory_usage()
+    
     # Take a measurement, updating & reading sensor values into the data container
     _data_container = take_measurement()
     
@@ -669,14 +699,13 @@ while True:
     if len(data_queue) == _DATA_QUEUE_MAX_LEN:
         # Data queue is full, write data to persistent storage
         dump_to_storage(data_queue)
+        print("[i] Automatic data dump performed.")
     
     # Put device to sleep until the next reading
-    lightsleep(_MEASURE_DELAY_MS)
+    lightsleep(_MEASURE_DELAY_MS - 250)
     
     # Check if a manual data dump was triggered
-    if manual_data_dump_triggered:
+    if wake_reason() == PIN_WAKE:
         # Dump to storage
         dump_to_storage(data_queue)
-        
-        # Reset the manual dump flag
-        manual_data_dump_triggered = False
+        print("[i] Manual data dump performed.")
