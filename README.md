@@ -20,7 +20,7 @@ This project was programmed in [MicroPython](https://docs.micropython.org/en/lat
 
 The system can be built using off the shelf components, and the software can be uploaded using a free IDE. The behavior can also be easily modified by changing just a few lines of code in the main.py source file.
 
-Once the hardware is put together, the software just needs to be uploaded to the microcontroller through Thonny and the system will then be capable of running.
+Once the hardware is put together, the software just needs to be uploaded to the microcontroller through Thonny and the system will then be capable of running. The only file required to be uploaded to the microcontroller is the *boot.py* file.
 
 
 ### Hardware
@@ -65,13 +65,11 @@ There are a handful of packages that need to be installed to the microcontroller
 
 ### SD Card Structure
 
-The SD card should have the following structure:
+The SD card should be formatted as MS-DOS (FAT32) and have the following structure:
 /
-|--- /tank_data
-    |
-    |--- /measurements
+|--- /measurements
 
-Where */* is the root directory, */tank_data* is the project directory, and */tank_data/measurements* is where the measurement data files will be located. The project is setup like this so that other directories or files can be put into the file system (e.g., HTML files if a server displaying tank data) while keeping the system compartamentalized.
+Where */* is the root directory and */measurements* is where the measurement data files will be located.
 
 <!-- USAGE EXAMPLE -->
 ## Usage Example
@@ -79,14 +77,7 @@ Where */* is the root directory, */tank_data* is the project directory, and */ta
 
 ### System Settings
 
-After the system has been set up, there are a handful of settings that the user may want to change. These include:
-
-| Variable Name | Variable Description | Data Type | Default Value |
-|---------------|----------------------|-----------|---------------|
-| _MEASURE_DELAY_SEC | Time in seconds between measurements. | int | 60 |
-| _USE_FAHRENHEIT_UNITS | Displays temperature in degrees F when True, otherwise, degrees C. | bool | True |
-| _DATA_QUEUE_MAX_LEN | Number of measurements to hold in temp. storage. When this value is reached, the data will be dumped to persistent storage. | int | 30 |
-| _BASE_CPU_FREQ_HZ | Base frequency of the CPU used on the microcontroller being used. This value is not recommended to be changed unless you know what the working values are for your board. | int | 160 MHz for this board |
+After the system has been set up, there are a handful of settings that the user may want to change. These settings can be found in the *User* and *General* settings sections within the *boot.py* file.
 
 
 ### Starting the System
@@ -95,6 +86,18 @@ There are two ways to start the system:
 
 - Press the play button in Thonny with the file opened. This will save the file to the device and start it.
 - Put the code into a file named *boot.py* and it will run any time the board is powered.
+
+
+### Project Future
+
+There are a number of quality of life as well as performance and design improvements that could be made to the system, including, but not limited to:
+
+- Improved memory management
+    - Decrease number of global variables
+
+- CPU time optimization
+    - Decrease number of calls to global variables
+    - Preload functions where available
 
 
 <!-- MARKDOWN LINKS & IMAGES -->

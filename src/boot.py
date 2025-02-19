@@ -2,56 +2,9 @@
 File:			boot.py
 Author: 		Zachary Milke
 Description:	This file controls the behavior of the system that monitors the environment in and
-    around my fish tank. It measures the water temperature on opposite sides of the tank, as well
-    as the air temperature and humidity outside the tank. Measurements are displayed on a 0.96"
-    OLED display and periodically updated at an interval defined below.
+    around my fish tank.
 
 Created on: 10-FEB-2025
-Updated on: 18-FEB-2025
-
-Changelog
-----------
-10-FEB-2025: 
-    - Module created
-
-14-FEB-2025:
-    - Adds a 5 second delay before the main loop begins to help when testing the program. This
-        keeps the device from putting itself to sleep, preventing myself from triggering the
-        KeyboardInterrupt exception to run commands using the microcontrollers interpreter. THIS
-        MAY BE REMOVED IF THIS BEHAVIOR IS NOT DESIRED.
-    - Adds error loop function consolidates error code.
-    - Adds push button peripheral that dumps the temporary data to storage when pressed.
-    - No longer attempts to dump data to storage if no data are passed.
-    - Adds a check for an existing data file when the system starts, removing the annoyance of a 
-        a new data file being created each time the program begins, leading to numerous junk files.
-
-17-FEB-2025:
-    - Removes unnecessary imports.
-    - Refines comments.
-    - Fixes issue where f2c function was producing incorrect values.
-    - Adds ability to connect to WiFi with SSID/Password.
-    - Adds function that sets system time using NTP.
-    - Adds timestamps to measurement data containers.
-
-18-FEB-2025:
-    - Renames file from "main.py" to "boot.py".
-    - Separates user settings (those that users may want to edit) from general settings (those
-        that in general, should be left alone).
-    - Removes unnecessary interrupt service routine tied to manual data dump button as it is not
-        needed when the device is set to wake on EXT0.
-    - Adds check for wake reason when manual data dump button is pressed.
-    - SPI bus used by the SD card module now uses the VSPI interface as HSPI_MISO (GPIO pin 12)
-        was causing issues on boot.
-    - SPI bus used by the SD card module now uses hardware SPI instead of software SPI.
-    - Adds a call for garbage collection when...:
-        - Program starts
-        - Data is dumped to persistent storage
-    - Removes count_data_files function and moved the single instruction directly into the 
-        create_data_file function.
-    - Adds more comprehensive and easier to read print statements.
-    - The lightsleep function call in the main loop now accounts for the duration of time the
-        onboard LED is on.
-    - Adds connection timeout for when device is attempting to connect to WiFi.
 """
 
 
@@ -127,28 +80,22 @@ _ENABLE_WIFI: bool = const(True)
 _WIFI_SSID: str = const("[INSERT SSID HERE]")
 _WIFI_PASS: str = const("[INSERT PASSWORD HERE]")
 
-# Duration of time in seconds WiFi will attempt to connect before timing out.
-_WIFI_TIMEOUT_THRESHOLD_SEC: int = const(30)
-
-# Number of attempts device will attempt to connect to WiFi before erroring out.
-_WIFI_CONNECT_ATTEMPTS: int = const(3)
-
 # Frequency at which the CPU will run. On the ESP32 used for testing, the base frequency is
 #   160_000_000 Hz, or 160 MHz. If changing the frequency isn't necessary, this whole section may
 #   be commented out to prevent useless variables being created in memory. In general, lower
 #   frequency values will use less power, and higher values more power.
 #
 #   THIS VALUE MUST BE AN INT. Calling freq() with anything else will thrown an exception.
-_CPU_FREQ_HZ: int = const(160_000_000 // 2)
-freq(_CPU_FREQ_HZ)
+freq(160_000_000 // 2)
 
 
 # -------------------------------------------------------------------------------------------------
 # General Settings --------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
 
-# Time in milliseconds between measurements. This value is NOT TO BE MODIFIED.
-_MEASURE_DELAY_MS: int = const(_MEASURE_DELAY_SEC * 1_000)
+# Time in milliseconds between measurements. Only the first value in the function should be
+#   modified. The default should appear as "60 * 1_000" and the "60" is what is to be edited.
+_MEASURE_DELAY_MS: int = const(60 * 1_000)
 
 # Path to root tank data dir. This value is NOT TO BE MODIFIED.
 _ROOT_DIR_PATH: str = const("/tank_data")
@@ -166,15 +113,14 @@ _DATA_FILE_HEADER: str = const("timestamp,air_temp_1,water_temp_1,water_temp_2\n
 # Path to the current data file.
 current_data_file_path: str = None
 
-# Time in milliseconds WiFi will attempt to connect before timing out.
-_WIFI_TIMEOUT_THRESHOLD_MS: int = const(_WIFI_TIMEOUT_THRESHOLD_SEC * 1_000)
+# Time in milliseconds WiFi will attempt to connect before timing out. Default is 30 seconds.
+_WIFI_TIMEOUT_THRESHOLD_MS: int = const(30 * 1_000)
 
 # Real time clock used for timestamps
 rtc: RTC = RTC()
 
-# Offsets used to adjust for time zones
-_TIMEZONE_OFFSET_HOUR: float = const(-5.0)
-_TIMEZONE_OFFSET_SEC: int = const(int(_TIMEZONE_OFFSET_HOUR * 3600))
+# Offsets used to adjust for time zones.
+_TIMEZONE_OFFSET_SEC: int = const(int(-5 * 3600))
 
 
 # -------------------------------------------------------------------------------------------------
@@ -226,9 +172,6 @@ _TEMP_UNITS: str = const('F') if _USE_FAHRENHEIT_UNITS else const('C')
 
 # Number of readings that have taken place
 measurement_count: int = 0
-
-# Number of times the current data file has been written to
-data_file_write_count: int = 0
 
 # Value used to indicate an invalid temperature variable
 _INVALID_READING_VALUE: float = -999_999.0
@@ -308,21 +251,6 @@ def c2f(_temp_c: float) -> float:
     """
     
     return (_temp_c * 9.0 / 5.0) + 32.0
-
-
-def f2c(_temp_f: float) -> float:
-    """ Convert a temperature in degrees Fahrenheit to degrees Celsius.
-    
-    params
-    -----
-    _temp_f [float, required] A temperature in degrees Fahrenheit.
-    
-    returns
-    -----
-    Temperature converted to degrees Celsius.
-    """
-    
-    return (_temp_f - 32.0) * (5.0 / 9.0)
 
 
 def take_measurement(increment_counter: bool = True) -> MeasurementData:
@@ -438,7 +366,6 @@ def dump_to_storage(_data: list[MeasurementData]) -> None:
         return
     
     # Get the necessary global variables
-    global data_file_write_count
     global current_data_file_path
     
     # Convert the data to a list of strings
@@ -469,9 +396,6 @@ def dump_to_storage(_data: list[MeasurementData]) -> None:
         # Write each data line to the file
         for _line in _lines:
             _f.write(_line)
-    
-    # Increment the data file write count
-    data_file_write_count += 1
     
     # Clear the input list, which will cause the data queue (global scope) to be cleared as well
     _data.clear()
@@ -591,8 +515,8 @@ def set_system_time() -> None:
                     connect_attempts += 1
                     stop = ticks_add(ticks_ms(), _WIFI_TIMEOUT_THRESHOLD_MS)
                 
-                # Check if the number of connection attempts has been reached.
-                if connect_attempts == _WIFI_CONNECT_ATTEMPTS:
+                # Check if the number of connection attempts has exceeded 3.
+                if connect_attempts == 3:
                     print("\n[x] Reached WiFi max connect attempts.")
                     error_loop(4)
                 
