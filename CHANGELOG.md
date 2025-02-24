@@ -33,6 +33,7 @@ This version incorporated some quality of life improvements and fixes small bugs
 
 - No longer attempts to dump data to storage if no data are passed.
 
+
 <!-- New Version! -->
 ## v0.2.0 [17-FEB-2025]
 
@@ -53,10 +54,9 @@ This version added wireless functions and removed unnecessary clutter.
 
 - Fixes issue where f2c function was not producing results.
 
+
 <!-- New Version! -->
 ## v0.3.0 [18-FEB-2025]
-
-This version
 
 ### Added or Changed
 
@@ -87,6 +87,7 @@ This version
 - The lightsleep function call in the main loop now accounts for the duration of time the
     onboard LED is on.
 
+
 <!-- New Version! -->
 ## v0.3.1 [19-FEB-2025]
 
@@ -109,3 +110,12 @@ This version
 
 - Removed the unused f2c function.
 - Removed duplicate global variable names.
+
+
+<!-- New Version! -->
+## v0.3.2 [24-FEB-2025]
+
+### Added or Changed
+
+- timestamp for measurements was changed to formatted timestamp
+- Added raw timestamp for easier processing/analysis when pulling data from sd card

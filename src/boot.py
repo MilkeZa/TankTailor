@@ -57,10 +57,9 @@ gc.collect()
 # User Settings -----------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
 
-# Time in seconds between measurements. This value MUST NOT go below two (2) seconds, as the DHT11 
-#   sensor can take up to two (2) seconds to update, and the DS18B20 sensors need at least 750ms to
-#   update. These delays are accounted for in the code body. This value is meant to be modified.
-_MEASURE_DELAY_SEC: int = const(60)
+# Time in milliseconds between measurements. Only the first value in the function should be
+#   modified. The default should appear as "60 * 1_000" and the "60" is what is to be edited.
+_MEASURE_DELAY_MS: int = const(60 * 1_000)
 
 # Number of data containers to hold in the data queue
 _DATA_QUEUE_MAX_LEN: int = const(30)
@@ -93,10 +92,6 @@ freq(160_000_000 // 2)
 # General Settings --------------------------------------------------------------------------------
 # -------------------------------------------------------------------------------------------------
 
-# Time in milliseconds between measurements. Only the first value in the function should be
-#   modified. The default should appear as "60 * 1_000" and the "60" is what is to be edited.
-_MEASURE_DELAY_MS: int = const(60 * 1_000)
-
 # Path to root tank data dir. This value is NOT TO BE MODIFIED.
 _ROOT_DIR_PATH: str = const("/tank_data")
 
@@ -108,7 +103,7 @@ _DATA_FILE_NAME_PREFIX: str = const("tank_measurements_")
 _DATA_FILE_EXTENSION: str = const(".csv")
 
 # Column headers for the data file. This may be modified to accomodate data being collected.
-_DATA_FILE_HEADER: str = const("timestamp,air_temp_1,water_temp_1,water_temp_2\n")
+_DATA_FILE_HEADER: str = const("raw_timestamp,formatted_timestamp,air_temp_1,water_temp_1,water_temp_2\n")
 
 # Path to the current data file.
 current_data_file_path: str = None
@@ -179,11 +174,14 @@ _INVALID_READING_VALUE: float = -999_999.0
 # Container used to store individual measurement data for both air and water values
 class MeasurementData:
     def __init__(self,
-                 _timestamp: str,
+                 _timestamp_raw: str,
+                 _timestamp_formatted: str,
                  _air_temp_1: float = None, 
                  _water_temp_1: float = None, _water_temp_2: float = None):
         # Assign class fields by checking if the arguments are None
-        self.timestamp: str = _timestamp
+        self.timestamp_raw: str = _timestamp_raw
+        self.timestamp_formatted: str = _timestamp_formatted
+        
         self.air_temp_1: float = _air_temp_1 \
             if _air_temp_1 is not None else _INVALID_READING_VALUE
         self.water_temp_1: float = _water_temp_1 \
@@ -270,11 +268,17 @@ def take_measurement(increment_counter: bool = True) -> MeasurementData:
     dht_sensor.measure()
     ds_sensors.convert_temp()
     
-    # Get the timestamp
-    _timestamp: str = format_system_time(rtc.datetime())
+    # Get the timestamp and format it
+    _timestamp: tuple = rtc.datetime()
+
+    # Convert timestamp to string and remove parens from tuple
+    _timestamp_raw: str = str(_timestamp)[1:-1]
+    
+    # Format timestamp into more easily readable string
+    _timestamp_formatted: str = format_system_time(_timestamp)
     
     # Create a new data container
-    _data_container: MeasurementData = MeasurementData(_timestamp)
+    _data_container: MeasurementData = MeasurementData(_timestamp_raw, _timestamp_formatted)
     
     try:
         # Read the sensor values into local variables
@@ -372,7 +376,7 @@ def dump_to_storage(_data: list[MeasurementData]) -> None:
     _lines: list[str] = []
     for _d in _data:
         # Format the line as timestamp, air temp 1, water temp 1, water temp 2, newline character
-        _line: str = f"{_d.timestamp},{_d.air_temp_1},{_d.water_temp_1},{_d.water_temp_2}\n"
+        _line: str = f"\"{_d.timestamp_raw}\",{_d.timestamp_formatted},{_d.air_temp_1},{_d.water_temp_1},{_d.water_temp_2}\n"
         
         # Insert the line into the list
         _lines.append(_line)
